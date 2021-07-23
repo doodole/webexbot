@@ -85,9 +85,10 @@ framework.hears('calendar', async (bot ,trigger) => {
     // Only gets events from the primary calendar. Calendar List could be looped over to obtain all events from all calendars.
     const res = await calendar.events.list({
         calendarId: 'primary',
+        orderBy: 'startTime',
+        singleEvents: true,
         timeMin: new Date(),
     });
-    console.log(res.data);
     message = [];
     res.data.items.forEach(event => {
         options = {
@@ -98,6 +99,57 @@ framework.hears('calendar', async (bot ,trigger) => {
         message.push(`### ${event.summary}\n* Start: ${new Intl.DateTimeFormat('en-US', options).format(new Date(event.start.dateTime))}\n* End: ${new Intl.DateTimeFormat('en-US', options).format(new Date(event.end.dateTime))}\n`)
     });
     bot.say(`markdown`, `${message.join('')}`)
+})
+
+framework.hears('freetime', async (bot, trigger) => {
+    responded = true; 
+    const [account] = await con.promise().query(
+        `SELECT * FROM tokens
+        WHERE webex_id = ${mysql.escape(trigger.personId)}`
+    )
+    if (!account.length) {
+        return bot.say(`markdown`, `This bot needs permission before being able to access your Google Calendar. Please click [this](${url}) link to connect your account.`)
+    }
+    oauth2Client.setCredentials({
+        access_token: `${account[0].access_token}`,
+        refresh_token: `${account[0].refresh_token}`
+    });
+    // Only gets events from the primary calendar. Calendar List could be looped over to obtain all events from all calendars.
+    const add_days = (days) => {
+        const new_date = new Date()
+        new_date.setDate(new_date.getDate() + days)
+        return new_date
+    };
+    const res = await calendar.events.list({
+        calendarId: 'primary',
+        timeMin: new Date(),
+        timeMax: add_days(Number(trigger.args[1])),
+        singleEvents: true,
+        orderBy: 'startTime',
+    });
+    let schedule = [];
+    res.data.items.forEach(event => {
+        schedule.push([new Date(event.start.dateTime), new Date(event.end.dateTime)])
+    });
+    let free_time = [];
+    let end = new Date()
+    for (i in schedule) {
+        if (end < schedule[i][0]) {
+            free_time.push([end, schedule[i][0]])
+        }
+        end = schedule[i][1]
+    }
+    free_time.push([schedule[schedule.length - 1][1], add_days(Number(trigger.args[1]))])
+    let message = [];
+    free_time.forEach(timeslot => {
+        options = {
+            year: 'numeric', month: 'long', day: 'numeric',
+            hour: 'numeric', minute: 'numeric', second: 'numeric',
+            hour12: true,
+        }
+        message.push(`${new Intl.DateTimeFormat('en-US', options).format(timeslot[0])} - ${new Intl.DateTimeFormat('en-US', options).format(timeslot[1])}\n`)
+    });
+    bot.say(`Here are your free timeslots within the next ${trigger.args[1]} days:\n${message.join("")}`)
 })
 
 framework.hears(/.*/gim, (bot, trigger) => {
