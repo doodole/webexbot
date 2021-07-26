@@ -52,7 +52,7 @@ var responded = false;
 framework.hears('help', (bot, trigger) => {
     bot.say('markdown', 'Here are all the commands:\n**calendar** - displays your Google Calendar events');
     responded = true;
-})
+});
 
 framework.hears('verify', async (bot, trigger) => {
     responded = true;
@@ -66,18 +66,19 @@ framework.hears('verify', async (bot, trigger) => {
         delete link[trigger.args[1]]
         return bot.say(`Setup complete! You can now use Google Calendar commands`);
     }
-    bot.say(`Couldn't find that verification code. Make sure you copied the command correctly`)
+    bot.say(`Couldn't find that verification code. Make sure you copied the command correctly`);
 })
 
+// Gets all future calendar events. Could allow users to pick specific days or timespans in the future
 framework.hears('calendar', async (bot ,trigger) => {
     responded = true;
     const [account] = await con.promise().query(
         `SELECT * FROM tokens
         WHERE webex_id = ${mysql.escape(trigger.personId)}`
-    )
+    );
     if (!account.length) {
         return bot.say(`markdown`, `This bot needs permission before being able to access your Google Calendar. Please click [this](${url}) link to connect your account.`)
-    }
+    };
     oauth2Client.setCredentials({
         access_token: `${account[0].access_token}`,
         refresh_token: `${account[0].refresh_token}`
@@ -95,74 +96,117 @@ framework.hears('calendar', async (bot ,trigger) => {
             year: 'numeric', month: 'long', day: 'numeric',
             hour: 'numeric', minute: 'numeric', second: 'numeric',
             hour12: true,
-          }
+          };
         message.push(`### ${event.summary}\n* Start: ${new Intl.DateTimeFormat('en-US', options).format(new Date(event.start.dateTime))}\n* End: ${new Intl.DateTimeFormat('en-US', options).format(new Date(event.end.dateTime))}\n`)
     });
-    bot.say(`markdown`, `${message.join('')}`)
+    bot.say(`markdown`, `${message.join('')}`);
 })
 
+// Gets whenever the user has freetime. Could space out days to make things more readable. Also could allow users to pick specific days.
 framework.hears('freetime', async (bot, trigger) => {
+    let args = trigger.args
     responded = true; 
     const [account] = await con.promise().query(
         `SELECT * FROM tokens
         WHERE webex_id = ${mysql.escape(trigger.personId)}`
-    )
+    );
     if (!account.length) {
         return bot.say(`markdown`, `This bot needs permission before being able to access your Google Calendar. Please click [this](${url}) link to connect your account.`)
-    }
+    };
     oauth2Client.setCredentials({
         access_token: `${account[0].access_token}`,
         refresh_token: `${account[0].refresh_token}`
     });
-    // Only gets events from the primary calendar. Calendar List could be looped over to obtain all events from all calendars.
-    const add_days = (days) => {
-        const new_date = new Date()
+    const add_days = (start, days) => {
+        const new_date = start
         new_date.setDate(new_date.getDate() + days)
         return new_date
     };
+    const timeMin = new Date()
+    const add_date = new Date() // for some reason, setting the date with the add_days function changes the date of timeMin as well. 
+    const timeMax = add_days(add_date, Number(args[1]))
+    // Only gets events from the primary calendar. Calendar List could be looped over to obtain all events from all calendars.
     const res = await calendar.events.list({
         calendarId: 'primary',
-        timeMin: new Date(),
-        timeMax: add_days(Number(trigger.args[1])),
+        timeMin: timeMin,
+        timeMax: timeMax,
         singleEvents: true,
         orderBy: 'startTime',
     });
     let schedule = [];
     res.data.items.forEach(event => {
-        schedule.push([new Date(event.start.dateTime), new Date(event.end.dateTime)])
+        schedule.push([new Date(event.start.dateTime), new Date(event.end.dateTime)]);
     });
-    let free_time = [];
-    let end = new Date()
-    for (i in schedule) {
-        if (end < schedule[i][0]) {
-            free_time.push([end, schedule[i][0]])
+    // Creating the start of each new day within the range of days
+    let day = Date.parse(new Date(new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: res.data.timeZone}).format(timeMin)));
+    const last_day = Date.parse(new Date(new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: res.data.timeZone}).format(timeMax)));
+    let day_changes = [];
+    while (day < last_day) {
+        day_changes.push(new Date(day))
+        day += 8.64e+7
+    };
+    // Adding the start of each day and the schedule in that day to an object
+    let dates = {};
+    dates[day_changes[0]] = [];
+    for (let i = 1; i < day_changes.length; i++) {
+        let current = 0;
+        while (schedule[current] !== undefined && day_changes[i] > schedule[current][0]) {
+            current += 1
+        };
+        dates[day_changes[i-1]] = schedule.slice(0, current);
+        schedule.splice(0, current);
+    };
+    if (schedule.length) {
+        dates[day_changes[day_changes.length-1]] = schedule
+    };
+    // Getting the time between scheduled times to obtain freetime
+    for (const day in dates) {
+        let free_time = [];
+        let end = new Date(day)
+        for (i in dates[day]) {
+            if (end < dates[day][i][0]) {
+                free_time.push([end, dates[day][i][0]])
+            };
+            end = dates[day][i][1];
+        };
+        const next_day = new Date(Date.parse(day) + 8.64e+7)
+        if (dates[day][dates[day].length -1][1] < next_day) {
+            free_time.push([dates[day][dates[day].length -1][1], next_day])
         }
-        end = schedule[i][1]
+        dates[day] = free_time;
     }
-    free_time.push([schedule[schedule.length - 1][1], add_days(Number(trigger.args[1]))])
+    // Creating the message the bot sends
     let message = [];
-    free_time.forEach(timeslot => {
-        options = {
-            year: 'numeric', month: 'long', day: 'numeric',
-            hour: 'numeric', minute: 'numeric', second: 'numeric',
-            hour12: true,
-        }
-        message.push(`${new Intl.DateTimeFormat('en-US', options).format(timeslot[0])} - ${new Intl.DateTimeFormat('en-US', options).format(timeslot[1])}\n`)
-    });
-    bot.say(`Here are your free timeslots within the next ${trigger.args[1]} days:\n${message.join("")}`)
-})
+    const date_options = {
+        year: 'numeric', month: 'long', day: 'numeric',
+        timeZone: res.data.timeZone
+    }
+    const timeslot_options = {
+        year: 'numeric', month: 'long', day: 'numeric',
+        hour: 'numeric', minute: 'numeric', second: 'numeric',
+        hour12: true,
+        timeZone: res.data.timeZone
+    };
+    for (const day in dates) {
+        message.push(`### ${new Intl.DateTimeFormat('en-US', date_options).format(new Date(day))}\n`)
+        dates[day].forEach(timeslot => {
+            message.push(`${new Intl.DateTimeFormat('en-US', timeslot_options).format(timeslot[0])} - ${new Intl.DateTimeFormat('en-US', timeslot_options).format(timeslot[1])}\n`)
+        })
+    }
+    bot.say(`markdown`, `Here are your free timeslots within the next ${args[1]} days:\n${message.join('')}`)
+});
 
 framework.hears(/.*/gim, (bot, trigger) => {
     if (!responded) {
         if (trigger.message.roomType === 'direct') {
             responded = false;
             return bot.say(`Sorry, I don't know how to respond to "${trigger.text}." You may see all my commands by pinging me with "help"`)
-        }
+        };
         bot.say(`Sorry, I don't know how to respond to "${trigger.args.slice(1).join(' ')}." You may see all my commands by pinging me with "help"`);
-    }
+    };
     responded = false;
-})
+});
 
 module.exports = {
     framework: framework
-}
+};
