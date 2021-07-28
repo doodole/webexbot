@@ -50,7 +50,7 @@ framework.on('spawn', function (bot, id, addedBy) {
 var responded = false;
 
 framework.hears('help', (bot, trigger) => {
-    bot.say('markdown', 'Here are all the commands:\n**calendar** - displays your Google Calendar events');
+    bot.say('markdown', 'Here are all the commands:\n**calendar** - displays your Google Calendar events\n**freetime** - shows all timeslots with freetime. Usage: freetime in x days - gives all free timeslots within x days. freetime start: x end: y - gives all free timeslots between date x and y. Example date: 17 July 2021');
     responded = true;
 });
 
@@ -104,8 +104,8 @@ framework.hears('calendar', async (bot ,trigger) => {
 
 // Gets whenever the user has freetime. Could space out days to make things more readable. Also could allow users to pick specific days.
 framework.hears('freetime', async (bot, trigger) => {
-    let args = trigger.args
     responded = true; 
+    const args = trigger.args;
     const [account] = await con.promise().query(
         `SELECT * FROM tokens
         WHERE webex_id = ${mysql.escape(trigger.personId)}`
@@ -122,9 +122,38 @@ framework.hears('freetime', async (bot, trigger) => {
         new_date.setDate(new_date.getDate() + days)
         return new_date
     };
-    const timeMin = new Date()
-    const add_date = new Date() // for some reason, setting the date with the add_days function changes the date of timeMin as well. 
-    const timeMax = add_days(add_date, Number(args[1]))
+    let timeMin;
+    let add_date; // for some reason, setting the date with the add_days function changes the date of timeMin as well. 
+    let timeMax;
+    if (args[1] === 'in') {
+        if (args[2] < 1) {
+            return bot.say('Please input an integer number of days from now that is greater than 0')
+        };
+        timeMin = new Date;
+        add_date = new Date;
+        timeMax = add_days(add_date, Number(args[2]));
+    } else if (args.indexOf('start:') !== -1 && args.indexOf('start:') !== -1) {
+        const start = args.indexOf('start:')
+        const end = args.indexOf('end:')
+        if (end > start) {
+            timeMin = new Date(args.slice(start, end).join(' '));
+            timeMax = new Date(args.slice(end, args.length).join(' '));
+        } else {
+            timeMin = new Date(args.slice(start, args.length).join(' '));
+            timeMax = new Date(args.slice(end, start).join(' '));
+        };
+        if (timeMin == 'Invalid Date' || timeMax == 'Invalid Date') {
+            return bot.say('One or both of the dates has been improperly formatted. Please format your dates like this: 17 July 2021, with the day, month, and year.')
+        } else if (timeMin === timeMax) {
+            return bot.say('Please make room between the two dates');
+        } else if (timeMin > timeMax) {
+            return bot.say('The start date occurs after the end date. Ensure that the start date comes before the end date')
+        }
+    } else {
+        timeMin = new Date(args.slice(1, args.length).join(' '));
+        add_date = new Date(args.slice(1, args.length).join(' '));
+        timeMax = add_days(add_date, 1);
+    }
     // Only gets events from the primary calendar. Calendar List could be looped over to obtain all events from all calendars.
     const res = await calendar.events.list({
         calendarId: 'primary',
@@ -156,9 +185,7 @@ framework.hears('freetime', async (bot, trigger) => {
         dates[day_changes[i-1]] = schedule.slice(0, current);
         schedule.splice(0, current);
     };
-    if (schedule.length) {
-        dates[day_changes[day_changes.length-1]] = schedule
-    };
+    dates[day_changes[day_changes.length-1]] = schedule
     // Getting the time between scheduled times to obtain freetime
     for (const day in dates) {
         let free_time = [];
@@ -170,8 +197,11 @@ framework.hears('freetime', async (bot, trigger) => {
             end = dates[day][i][1];
         };
         const next_day = new Date(Date.parse(day) + 8.64e+7)
-        if (dates[day][dates[day].length -1][1] < next_day) {
-            free_time.push([dates[day][dates[day].length -1][1], next_day])
+        console.log(dates[day])
+        if( dates[day][dates[day].length - 1] !== undefined) {
+            if (dates[day][dates[day].length -1][1] < next_day) {
+                free_time.push([dates[day][dates[day].length -1][1], next_day])
+            }
         }
         dates[day] = free_time;
     }
@@ -189,11 +219,15 @@ framework.hears('freetime', async (bot, trigger) => {
     };
     for (const day in dates) {
         message.push(`### ${new Intl.DateTimeFormat('en-US', date_options).format(new Date(day))}\n`)
-        dates[day].forEach(timeslot => {
-            message.push(`${new Intl.DateTimeFormat('en-US', timeslot_options).format(timeslot[0])} - ${new Intl.DateTimeFormat('en-US', timeslot_options).format(timeslot[1])}\n`)
-        })
+        if (!dates[day].length) {
+            message.push(`This day is completely free!\n`)
+        } else {
+            dates[day].forEach(timeslot => {
+                message.push(`${new Intl.DateTimeFormat('en-US', timeslot_options).format(timeslot[0])} - ${new Intl.DateTimeFormat('en-US', timeslot_options).format(timeslot[1])}\n`)
+            })
+        }
     }
-    bot.say(`markdown`, `Here are your free timeslots within the next ${args[1]} days:\n${message.join('')}`)
+    bot.say(`markdown`, `Here are your free timeslots from ${new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: res.data.timeZone}).format(timeMin)} - ${new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: res.data.timeZone}).format(timeMax)}:\n${message.join('')}`)
 });
 
 framework.hears(/.*/gim, (bot, trigger) => {
