@@ -4,5 +4,6 @@ module.exports = {
     dbuser: 'User connecting to the database',
     dbpassword: 'Database password',
     googleclientid: 'Your Google Client ID',
-    googleclientsecret: 'Your Google Client Secret'
+    googleclientsecret: 'Your Google Client Secret',
+    encryptionSecret: 'Randomly generated AES encryption key'
 };

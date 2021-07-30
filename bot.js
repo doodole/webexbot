@@ -4,6 +4,7 @@ var {link} = require('./app')
 const {google} = require('googleapis');
 const mysql = require('mysql2');
 const calendar = google.calendar('v3');
+const crypto = require('crypto')
 
 // mysql database connection
 var con = mysql.createConnection({
@@ -34,6 +35,24 @@ const url = oauth2Client.generateAuthUrl({
     scope: scopes.join(' ')
 });
 
+// functions for encrypting and decrypting strings
+const algorithm = 'aes-256-ctr'
+const encrypt = (text) => {
+    const iv = crypto.randomBytes(16)
+    const cipher = crypto.createCipheriv(algorithm, config.encryptionSecret, iv);
+    const encrypted = Buffer.concat([cipher.update(text), cipher.final()]);
+    return {
+        iv: iv.toString('hex'),
+        content: encrypted.toString('hex')
+    };
+};
+
+const decrypt = (hash) => {
+    const decipher = crypto.createDecipheriv(algorithm, config.encryptionSecret, Buffer.from(hash.iv, 'hex'));
+    const decrpyted = Buffer.concat([decipher.update(Buffer.from(hash.content, 'hex')), decipher.final()]);
+    return decrpyted.toString();
+};
+
 var framework = new Framework({token: config.token});
 
 framework.on('initialized', () => {
@@ -58,11 +77,24 @@ framework.hears('verify', async (bot, trigger) => {
     responded = true;
     if (link[trigger.args[1]]) {
         const {tokens} = await oauth2Client.getToken(link[trigger.args[1]]);
-        // Tokens stored in plain text. This needs to be changed eventually.
-        con.query(
-            `INSERT INTO tokens 
-            VALUES (${mysql.escape(trigger.personId)}, ${mysql.escape(tokens.access_token)}, ${mysql.escape(tokens.refresh_token)})`
+        const access_token = encrypt(tokens.access_token);
+        const refresh_token = encrypt(tokens.refresh_token);
+        const [account] = await con.promise().query(
+            `SELECT * FROM tokens
+            WHERE webex_id = ${mysql.escape(trigger.personId)}`
         );
+        if (!account.length) {
+            con.query(
+                `INSERT INTO tokens 
+                VALUES (${mysql.escape(trigger.personId)}, ${mysql.escape(access_token.content)}, ${mysql.escape(access_token.iv)}, ${mysql.escape(refresh_token.content)}, ${mysql.escape(refresh_token.iv)})`
+            );
+        } else {
+            con.query(
+                `UPDATE tokens
+                SET access_token = ${mysql.escape(access_token.content)}, access_token_iv = ${mysql.escape(access_token.iv)}, refresh_token = ${mysql.escape(refresh_token.content)}, refresh_token_iv = ${mysql.escape(refresh_token.iv)}
+                WHERE webex_id = ${mysql.escape(trigger.personId)}`
+            )
+        }
         delete link[trigger.args[1]]
         return bot.say(`Setup complete! You can now use Google Calendar commands`);
     }
@@ -79,17 +111,36 @@ framework.hears('calendar', async (bot ,trigger) => {
     if (!account.length) {
         return bot.say(`markdown`, `This bot needs permission before being able to access your Google Calendar. Please click [this](${url}) link to connect your account.`)
     };
+    const access_token = decrypt({'iv': account[0].access_token_iv, 'content': account[0].access_token})
+    const refresh_token = decrypt({'iv': account[0].refresh_token_iv, 'content': account[0].refresh_token})
     oauth2Client.setCredentials({
-        access_token: `${account[0].access_token}`,
-        refresh_token: `${account[0].refresh_token}`
+        access_token: access_token,
+        refresh_token: refresh_token
     });
-    // Only gets events from the primary calendar. Calendar List could be looped over to obtain all events from all calendars.
-    const res = await calendar.events.list({
-        calendarId: 'primary',
-        orderBy: 'startTime',
-        singleEvents: true,
-        timeMin: new Date(),
+    oauth2Client.on('tokens', (tokens) => {
+        const access_token = encrypt(tokens.access_token)
+        con.query(
+            `UPDATE tokens
+            SET access_token = ${mysql.escape(access_token.content)}, access_token_iv = ${mysql.escape(access_token.iv)}
+            WHERE webex_id = ${mysql.escape(trigger.personId)}`
+        )
     });
+    let res;
+    // Gets calendar events. Also checks if refresh token has been revoked or has run out.
+    try {
+        // Only gets events from the primary calendar. Calendar List could be looped over to obtain all events from all calendars.
+        res = await calendar.events.list({
+            calendarId: 'primary',
+            timeMin: timeMin,
+            timeMax: timeMax,
+            singleEvents: true,
+            orderBy: 'startTime',
+        });
+    } catch (e) {
+        if (e instanceof Error) {
+            return bot.say(`markdown`, `The refresh token associated with your account has either expired or has been revoked. Please click [this](${url}) link to reconnect your account.`)
+        }
+    }
     message = [];
     res.data.items.forEach(event => {
         options = {
@@ -99,10 +150,10 @@ framework.hears('calendar', async (bot ,trigger) => {
           };
         message.push(`### ${event.summary}\n* Start: ${new Intl.DateTimeFormat('en-US', options).format(new Date(event.start.dateTime))}\n* End: ${new Intl.DateTimeFormat('en-US', options).format(new Date(event.end.dateTime))}\n`)
     });
-    bot.say(`markdown`, `${message.join('')}`);
+    bot.say(`markdown`, message.join(''));
 })
 
-// Gets whenever the user has freetime. Could space out days to make things more readable. Also could allow users to pick specific days.
+// Gets whenever the user has freetime
 framework.hears('freetime', async (bot, trigger) => {
     responded = true; 
     const args = trigger.args;
@@ -113,9 +164,11 @@ framework.hears('freetime', async (bot, trigger) => {
     if (!account.length) {
         return bot.say(`markdown`, `This bot needs permission before being able to access your Google Calendar. Please click [this](${url}) link to connect your account.`)
     };
+    const access_token = decrypt({'iv': account[0].access_token_iv, 'content': account[0].access_token})
+    const refresh_token = decrypt({'iv': account[0].refresh_token_iv, 'content': account[0].refresh_token})
     oauth2Client.setCredentials({
-        access_token: `${account[0].access_token}`,
-        refresh_token: `${account[0].refresh_token}`
+        access_token: access_token,
+        refresh_token: refresh_token
     });
     const add_days = (start, days) => {
         const new_date = start
@@ -126,15 +179,25 @@ framework.hears('freetime', async (bot, trigger) => {
     let add_date; // for some reason, setting the date with the add_days function changes the date of timeMin as well. 
     let timeMax;
     if (args[1] === 'in') {
+        const days_from_now = Number(args[2]);
+        if(isNaN(days_from_now)) {
+            return bot.say('Please make sure you input an integer number of days from now.')
+        };
+        if (!Number.isInteger(days_from_now)) {
+            return bot.say('Please make sure you input an integer number of days from now.')
+        };
         if (args[2] < 1) {
-            return bot.say('Please input an integer number of days from now that is greater than 0')
+            return bot.say('Please input an integer number of days from now that is greater than 0.')
         };
         timeMin = new Date;
         add_date = new Date;
-        timeMax = add_days(add_date, Number(args[2]));
-    } else if (args.indexOf('start:') !== -1 && args.indexOf('start:') !== -1) {
-        const start = args.indexOf('start:')
-        const end = args.indexOf('end:')
+        timeMax = add_days(add_date, days_from_now);
+    } else if (args.indexOf('start:') !== -1 || args.indexOf('end:') !== -1) {
+        if (args.indexOf('start:') === -1 || args.indexOf('end:') === -1) {
+            return bot.say('Please make sure you indicate both a start and end time. Ex. freetime start: 30 july 2021 end: 8 august 2021')
+        }
+        const start = args.indexOf('start:');
+        const end = args.indexOf('end:');
         if (end > start) {
             timeMin = new Date(args.slice(start, end).join(' '));
             timeMax = new Date(args.slice(end, args.length).join(' '));
@@ -142,26 +205,42 @@ framework.hears('freetime', async (bot, trigger) => {
             timeMin = new Date(args.slice(start, args.length).join(' '));
             timeMax = new Date(args.slice(end, start).join(' '));
         };
-        if (timeMin == 'Invalid Date' || timeMax == 'Invalid Date') {
-            return bot.say('One or both of the dates has been improperly formatted. Please format your dates like this: 17 July 2021, with the day, month, and year.')
-        } else if (timeMin === timeMax) {
-            return bot.say('Please make room between the two dates');
-        } else if (timeMin > timeMax) {
-            return bot.say('The start date occurs after the end date. Ensure that the start date comes before the end date')
-        }
     } else {
         timeMin = new Date(args.slice(1, args.length).join(' '));
         add_date = new Date(args.slice(1, args.length).join(' '));
         timeMax = add_days(add_date, 1);
     }
-    // Only gets events from the primary calendar. Calendar List could be looped over to obtain all events from all calendars.
-    const res = await calendar.events.list({
-        calendarId: 'primary',
-        timeMin: timeMin,
-        timeMax: timeMax,
-        singleEvents: true,
-        orderBy: 'startTime',
+    if (timeMin == 'Invalid Date' || timeMax == 'Invalid Date') {
+        return bot.say('One or more of the dates has been improperly formatted. Please format your dates like this: 17 July 2021, with the day, month, and year.')
+    } else if (timeMin === timeMax) {
+        return bot.say('Please make room between the two dates.');
+    } else if (timeMin > timeMax) {
+        return bot.say('The start date occurs after the end date. Ensure that the start date comes before the end date.')
+    }
+    oauth2Client.on('tokens', (tokens) => {
+        const access_token = encrypt(tokens.access_token)
+        con.query(
+            `UPDATE tokens
+            SET access_token = ${mysql.escape(access_token.content)}, access_token_iv = ${mysql.escape(access_token.iv)}
+            WHERE webex_id = ${mysql.escape(trigger.personId)}`
+        )
     });
+    let res;
+    // Gets calendar events. Also checks if refresh token has been revoked or has run out.
+    try {
+        // Only gets events from the primary calendar. Calendar List could be looped over to obtain all events from all calendars.
+        res = await calendar.events.list({
+            calendarId: 'primary',
+            timeMin: timeMin,
+            timeMax: timeMax,
+            singleEvents: true,
+            orderBy: 'startTime',
+        });
+    } catch (e) {
+        if (e instanceof Error) {
+            return bot.say(`markdown`, `The refresh token associated with your account has either expired or has been revoked. Please click [this](${url}) link to reconnect your account.`)
+        }
+    }
     let schedule = [];
     res.data.items.forEach(event => {
         schedule.push([new Date(event.start.dateTime), new Date(event.end.dateTime)]);
@@ -197,7 +276,6 @@ framework.hears('freetime', async (bot, trigger) => {
             end = dates[day][i][1];
         };
         const next_day = new Date(Date.parse(day) + 8.64e+7)
-        console.log(dates[day])
         if( dates[day][dates[day].length - 1] !== undefined) {
             if (dates[day][dates[day].length -1][1] < next_day) {
                 free_time.push([dates[day][dates[day].length -1][1], next_day])
@@ -218,14 +296,39 @@ framework.hears('freetime', async (bot, trigger) => {
         timeZone: res.data.timeZone
     };
     for (const day in dates) {
-        message.push(`### ${new Intl.DateTimeFormat('en-US', date_options).format(new Date(day))}\n`)
+        const day_of_the_week_number = new Date(day).getDay();
+        let day_of_the_week;
+        switch (day_of_the_week_number) {
+            case 0:
+                day_of_the_week = 'Sunday';
+                break;
+            case 1:
+                day_of_the_week = 'Monday';
+                break;
+            case 2:
+                day_of_the_week = 'Tuesday';
+                break;
+            case 3:
+                day_of_the_week = 'Wednesday';
+                break;
+            case 4:
+                day_of_the_week = 'Thursday';
+                break;
+            case 5:
+                day_of_the_week = 'Friday';
+                break;
+            case 6:
+                day_of_the_week = 'Saturday';
+                break;                
+        };
+        message.push(`### ${new Intl.DateTimeFormat('en-US', date_options).format(new Date(day))} (${day_of_the_week})\n`);
         if (!dates[day].length) {
-            message.push(`This day is completely free!\n`)
+            message.push(`This day is completely free!\n`);
         } else {
             dates[day].forEach(timeslot => {
-                message.push(`${new Intl.DateTimeFormat('en-US', timeslot_options).format(timeslot[0])} - ${new Intl.DateTimeFormat('en-US', timeslot_options).format(timeslot[1])}\n`)
-            })
-        }
+                message.push(`${new Intl.DateTimeFormat('en-US', timeslot_options).format(timeslot[0])} - ${new Intl.DateTimeFormat('en-US', timeslot_options).format(timeslot[1])}\n`);
+            });
+        };
     }
     bot.say(`markdown`, `Here are your free timeslots from ${new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: res.data.timeZone}).format(timeMin)} - ${new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: res.data.timeZone}).format(timeMax)}:\n${message.join('')}`)
 });
