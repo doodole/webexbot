@@ -72,7 +72,7 @@ var responded = false;
 
 // Help command
 framework.hears('help', (bot, trigger) => {
-    bot.say('markdown', 'Here are all the commands:\n**calendar** - displays your Google Calendar events\n**create event** - Allows you to create a basic calendar event. Parameters: title: title of event, description: description of event, start: start time of event, end: end time of event, timezone: timezone you want to schedule the event for. You may find all the timezones [here](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones) under the third column. Example usage: create event -start august 3 2021 15:00 -end august 3 2021 17:00 -timezone America/New_York -description meet with friends -title meeting\n**freetime** - shows all timeslots with freetime. Usage: freetime in x days - gives all free timeslots within x days. freetime start: x end: y - gives all free timeslots between date x and y. Example date: 17 July 2021');
+    bot.say('markdown', 'Here are all the commands:\n**calendar** - displays your Google Calendar events\n**create event** - Allows you to create a basic calendar event. Parameters: title, description, start, end, timezone. Example usage: create event -start august 3 2021 15:00 -end august 3 2021 17:00 -timezone America/New_York -description meet with friends -title meeting\n**freetime** - shows all timeslots with freetime. Usage: freetime in x days - gives all free timeslots within x days. freetime start: x end: y - gives all free timeslots between date x and y. Example date: 17 July 2021');
     responded = true;
 });
 
