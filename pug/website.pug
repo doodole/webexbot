@@ -1,0 +1,30 @@
+doctype html
+html(lang='en')
+    head
+        meta(charset='utf-8')
+        meta(name="viewport" content="width=device-width, initial-scale=1.0")
+        title WebEx Bot
+        link(rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css")
+        script(src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.16.0/umd/popper.min.js")
+        script(src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js")
+        script(src="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js")
+        style.
+            body {
+                background-color: #0B0B0B;
+                color: #E2E2E2;
+                font-family: 'calibri', 'arial';
+            }
+        script. 
+            function copy_text() {
+                var text = document.getElementById("input");
+                text.select();
+                document.execCommand("copy");
+                document.getElementById("button").innerHTML = "Command has been copied!";
+            };
+    body
+    div.text-center
+        br
+        br
+        h5 In order to connect your google account to your Webex account, #[strong please direct message the bot] with this command (no need to start with it's name):
+        input(style='type: "text"; margin-right: 1vw' value = verification_code id = "input")
+        button(onClick='copy_text()' id = 'button') Copy Command
