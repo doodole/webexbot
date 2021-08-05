@@ -177,7 +177,13 @@ framework.hears('freetime', async (bot, trigger) => {
         access_token: access_token,
         refresh_token: refresh_token
     });
-    const args = trigger.args;
+    let args;
+    if (trigger.message.roomType === 'direct') {
+        args = trigger.args;
+    } else {
+        args = trigger.args.slice(1, trigger.args.length)
+    };
+    console.log(args)
     const add_days = (start, days) => {
         const new_date = start;
         new_date.setDate(new_date.getDate() + days);
@@ -375,8 +381,13 @@ framework.hears('create event', async (bot, trigger) => {
             WHERE webex_id = ${mysql.escape(trigger.personId)}`
         );
     });
-
-    const args = trigger.args;
+    let args;
+    if (trigger.message.roomType === 'direct') {
+        args = trigger.args;
+    } else {
+        args = trigger.args.slice(1, trigger.args.length)
+    };
+    console.log(args)
     let params = {};
     let current_key;
 
